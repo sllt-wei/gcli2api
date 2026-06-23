@@ -18,6 +18,7 @@ from config import (
     get_antigravity_api_url,
     get_antigravity_stream2nostream,
     get_auto_ban_error_codes,
+    get_no_credential_error_msg,
 )
 from log import log
 
@@ -312,7 +313,7 @@ async def stream_request(
         # 如果返回值是None，直接返回错误500
         log.error("[ANTIGRAVITY STREAM] 当前无可用凭证")
         yield Response(
-            content=json.dumps({"error": "当前无可用凭证"}),
+            content=json.dumps({"error": get_no_credential_error_msg()}),
             status_code=500,
             media_type="application/json"
         )
@@ -514,7 +515,7 @@ async def stream_request(
                 if not switched:
                     log.error("[ANTIGRAVITY STREAM] 重试时无可用凭证或令牌")
                     yield Response(
-                        content=json.dumps({"error": "当前无可用凭证"}),
+                        content=json.dumps({"error": get_no_credential_error_msg()}),
                         status_code=500,
                         media_type="application/json"
                     )
@@ -593,7 +594,7 @@ async def non_stream_request(
         # 如果返回值是None，直接返回错误500
         log.error("[ANTIGRAVITY] 当前无可用凭证")
         return Response(
-            content=json.dumps({"error": "当前无可用凭证"}),
+            content=json.dumps({"error": get_no_credential_error_msg()}),
             status_code=500,
             media_type="application/json"
         )
@@ -787,7 +788,7 @@ async def non_stream_request(
                 if not switched:
                     log.error("[ANTIGRAVITY] 重试时无可用凭证或令牌")
                     return Response(
-                        content=json.dumps({"error": "当前无可用凭证"}),
+                        content=json.dumps({"error": get_no_credential_error_msg()}),
                         status_code=500,
                         media_type="application/json"
                     )

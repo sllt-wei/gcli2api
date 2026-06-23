@@ -32,3 +32,15 @@ async def serve_control_panel(request: Request):
     except Exception as e:
         log.error(f"加载控制面板页面失败: {e}")
         raise HTTPException(status_code=500, detail="服务器内部错误")
+
+
+@router.get("/creative", response_class=HTMLResponse)
+async def serve_creative_dashboard():
+    """提供创意创作中心"""
+    try:
+        with open("front/creative_dashboard.html", "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except Exception as e:
+        log.error(f"加载创意创作中心失败: {e}")
+        raise HTTPException(status_code=500, detail="服务器内部错误")

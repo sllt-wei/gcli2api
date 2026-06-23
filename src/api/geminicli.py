@@ -18,7 +18,7 @@ import json
 from typing import Any, Dict, Optional, Callable, Tuple
 
 from fastapi import Response
-from config import get_code_assist_endpoint, get_auto_ban_error_codes
+from config import get_code_assist_endpoint, get_auto_ban_error_codes, get_no_credential_error_msg
 from log import log
 
 from src.credential_manager import credential_manager
@@ -143,7 +143,7 @@ async def stream_request(
     if not cred_result:
         # 如果返回值是None，直接返回错误500
         yield Response(
-            content=json.dumps({"error": "当前无可用凭证"}),
+            content=json.dumps({"error": get_no_credential_error_msg()}),
             status_code=500,
             media_type="application/json"
         )
@@ -369,7 +369,7 @@ async def stream_request(
                 if not switched:
                     log.error("[GEMINICLI STREAM] 重试时无可用凭证或刷新失败")
                     yield Response(
-                        content=json.dumps({"error": "当前无可用凭证"}),
+                        content=json.dumps({"error": get_no_credential_error_msg()}),
                         status_code=500,
                         media_type="application/json"
                     )
@@ -434,7 +434,7 @@ async def non_stream_request(
     if not cred_result:
         # 如果返回值是None，直接返回错误500
         return Response(
-            content=json.dumps({"error": "当前无可用凭证"}),
+            content=json.dumps({"error": get_no_credential_error_msg()}),
             status_code=500,
             media_type="application/json"
         )
@@ -598,7 +598,7 @@ async def non_stream_request(
                     if not switched:
                         log.error("[NON-STREAM] 重试时无可用凭证或刷新失败")
                         return Response(
-                            content=json.dumps({"error": "当前无可用凭证"}),
+                            content=json.dumps({"error": get_no_credential_error_msg()}),
                             status_code=500,
                             media_type="application/json"
                         )
@@ -649,7 +649,7 @@ async def non_stream_request(
                     if not switched:
                         log.error("[NON-STREAM] 重试时无可用凭证或刷新失败")
                         return Response(
-                            content=json.dumps({"error": "当前无可用凭证"}),
+                            content=json.dumps({"error": get_no_credential_error_msg()}),
                             status_code=500,
                             media_type="application/json"
                         )

@@ -36,6 +36,8 @@ ENV_MAPPINGS = {
     "RETRY_429_ENABLED": "retry_429_enabled",
     "RETRY_429_INTERVAL": "retry_429_interval",
     "ANTI_TRUNCATION_MAX_ATTEMPTS": "anti_truncation_max_attempts",
+    "RESOURCE_EXHAUSTED_COOLDOWN_HOURS": "resource_exhausted_cooldown_hours",
+    "NO_CREDENTIAL_ERROR_MSG": "no_credential_error_msg",
     "COMPATIBILITY_MODE": "compatibility_mode_enabled",
     "RETURN_THOUGHTS_TO_FRONTEND": "return_thoughts_to_frontend",
     "ANTIGRAVITY_STREAM2NOSTREAM": "antigravity_stream2nostream",
@@ -198,6 +200,25 @@ async def get_anti_truncation_max_attempts() -> int:
             pass
 
     return int(await get_config_value("anti_truncation_max_attempts", 3))
+
+
+async def get_resource_exhausted_cooldown_hours() -> float:
+    """Get cooldown hours for RESOURCE_EXHAUSTED errors. Default: 4."""
+    env_value = os.getenv("RESOURCE_EXHAUSTED_COOLDOWN_HOURS")
+    if env_value:
+        try:
+            return float(env_value)
+        except ValueError:
+            pass
+    return float(await get_config_value("resource_exhausted_cooldown_hours", 4))
+
+
+def get_no_credential_error_msg() -> str:
+    """Get the error message returned when no credentials are available. Sync, reads from cache."""
+    env_value = os.getenv("NO_CREDENTIAL_ERROR_MSG")
+    if env_value:
+        return env_value
+    return str(_config_cache.get("no_credential_error_msg", "当前无可用token"))
 
 
 # Server Configuration

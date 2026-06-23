@@ -16,6 +16,7 @@ from config import (
     get_retry_429_enabled,
     get_retry_429_interval,
     get_retry_429_max_retries,
+    get_resource_exhausted_cooldown_hours,
 )
 from log import log
 from src.credential_manager import CredentialManager
@@ -162,6 +163,9 @@ async def record_api_call_success(
         await credential_manager.record_api_call_result(
             credential_name, True, mode=mode, model_name=model_name
         )
+    if model_name:
+        from src import stats as _stats
+        await _stats.increment(model_name)
 
 
 async def record_api_call_error(
@@ -215,7 +219,7 @@ async def parse_and_log_cooldown(
     """
     try:
         error_data = json.loads(error_text)
-        cooldown_until = parse_quota_reset_timestamp(error_data)
+        cooldown_until = await parse_quota_reset_timestamp(error_data)
         if cooldown_until:
             log.info(
                 f"[{mode.upper()}] 检测到quota冷却时间: "
@@ -441,10 +445,8 @@ async def collect_streaming_response(stream_generator) -> Response:
     )
 
 
-RESOURCE_EXHAUSTED_COOLDOWN_HOURS = 4  # RESOURCE_EXHAUSTED 错误的默认冷却时间（小时）
 
-
-def parse_quota_reset_timestamp(error_response: dict) -> Optional[float]:
+async def parse_quota_reset_timestamp(error_response: dict) -> Optional[float]:
     """
     从Google API错误响应中提取quota重置时间戳
 
@@ -489,7 +491,9 @@ def parse_quota_reset_timestamp(error_response: dict) -> Optional[float]:
                     if reset_dt.tzinfo is None:
                         reset_dt = reset_dt.replace(tzinfo=timezone.utc)
 
-                    return reset_dt.astimezone(timezone.utc).timestamp()
+                    ts = reset_dt.astimezone(timezone.utc).timestamp()
+                    log.info(f"[QUOTA] 账号返回重置时间: {reset_timestamp_str}")
+                    return ts
 
         # 如果是 RESOURCE_EXHAUSTED 错误且消息完全匹配，设置默认4小时冷却时间
         if (
@@ -497,7 +501,8 @@ def parse_quota_reset_timestamp(error_response: dict) -> Optional[float]:
             and error_obj.get("message") == "Resource has been exhausted (e.g. check quota)."
         ):
             import time
-            cooldown_until = time.time() + RESOURCE_EXHAUSTED_COOLDOWN_HOURS * 3600
+            hours = await get_resource_exhausted_cooldown_hours()
+            cooldown_until = time.time() + hours * 3600
             return cooldown_until
 
         return None

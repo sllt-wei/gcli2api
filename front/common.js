@@ -259,6 +259,7 @@ function createCredsManager(type) {
             if (this.type === 'antigravity') {
                 batchBtnNames.push('EnableCredit');
                 batchBtnNames.push('DisableCredit');
+                batchBtnNames.push('ClearCooldown');
             }
             const batchBtns = batchBtnNames.map(action =>
                 document.getElementById(this.getElementId(`Batch${action}Btn`))
@@ -727,6 +728,9 @@ function createCredCard(credInfo, manager) {
         <button class="cred-btn" onclick="verify${managerType === 'antigravity' ? 'Antigravity' : ''}ProjectId('${filename}')" title="重新获取Project ID，可恢复403错误">检验</button>
         <button class="cred-btn" onclick="test${managerType === 'antigravity' ? 'Antigravity' : ''}Credential('${filename}')" title="测试凭证是否可用">消息测试</button>
         <button class="cred-btn" onclick="toggle${managerType === 'antigravity' ? 'Antigravity' : ''}ErrorDetails('${pathId}')" title="查看该凭证的详细报错信息">查看报错</button>
+        ${managerType === 'antigravity' && credInfo.model_cooldowns && Object.keys(credInfo.model_cooldowns).length > 0
+            ? `<button class="cred-btn" data-filename="${filename}" data-action="clear_cooldown" title="清除该凭证的所有模型冷却">清除冷却</button>`
+            : ''}
         <button class="cred-btn delete" data-filename="${filename}" data-action="delete">删除</button>
     `;
 
@@ -2759,6 +2763,8 @@ function populateConfigForm() {
     document.getElementById('antigravitySwitchCredentialEnabled').checked = Boolean(c.antigravity_switch_credential_enabled);
 
     setConfigField('antiTruncationMaxAttempts', c.anti_truncation_max_attempts || 3);
+    setConfigField('resourceExhaustedCooldownHours', c.resource_exhausted_cooldown_hours || 4);
+    setConfigField('noCredentialErrorMsg', c.no_credential_error_msg || '当前无可用token');
 
     setConfigField('keepaliveUrl', c.keepalive_url || '');
     setConfigField('keepaliveInterval', c.keepalive_interval || 60);
@@ -2812,6 +2818,8 @@ async function saveConfig() {
             antigravity_stream2nostream: getChecked('antigravityStream2nostream'),
             antigravity_switch_credential_enabled: getChecked('antigravitySwitchCredentialEnabled'),
             anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3),
+            resource_exhausted_cooldown_hours: getFloat('resourceExhaustedCooldownHours', 4),
+            no_credential_error_msg: getValue('noCredentialErrorMsg'),
             keepalive_url: getValue('keepaliveUrl'),
             keepalive_interval: getInt('keepaliveInterval', 60)
         };
@@ -3222,4 +3230,142 @@ document.addEventListener('DOMContentLoaded', function () {
 function autoSetKeepaliveUrl() {
     const url = `${window.location.protocol}//${window.location.host}`;
     document.getElementById('keepaliveUrl').value = url;
+}
+
+async function loadModelStats() {
+    const container = document.getElementById('modelStatsContent');
+    container.innerHTML = '<p style="color:#999;">加载中...</p>';
+    try {
+        const res = await fetch('./stats', { headers: getAuthHeaders() });
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+
+        const today = new Date().toISOString().slice(0, 10);
+        const days = Object.keys(data.daily).sort().reverse();
+        const todayTotal = (data.daily[today] || {total: 0}).total;
+        const yesterday = days.find(d => d < today);
+        const yesterdayTotal = (data.daily[yesterday] || {total: 0}).total;
+        const modelCount = Object.keys(data.total).length;
+        const week7 = days.slice(0, 7).reduce((s, d) => s + (data.daily[d]?.total || 0), 0);
+
+        // 趋势箭头
+        const trend = todayTotal > yesterdayTotal ? '↑' : todayTotal < yesterdayTotal ? '↓' : '→';
+        const trendColor = todayTotal > yesterdayTotal ? '#1e8e3e' : todayTotal < yesterdayTotal ? '#d93025' : '#888';
+
+        // 模型表格 — 简化模型名显示
+        const sortedModels = Object.entries(data.total).sort((a, b) => b[1] - a[1]);
+        const maxCount = sortedModels[0]?.[1] || 1;
+        const shortName = name => {
+            const parts = name.split('-');
+            // 去掉开头的 gemini，保留后面有意义的部分，最多4段
+            const meaningful = parts.filter(p => p !== 'gemini' && p !== 'models');
+            return meaningful.slice(0, 4).join('-') || name;
+        };
+        const modelRows = sortedModels.map(([m, c], i) => {
+            const pct = Math.round(c / maxCount * 100);
+            const barColor = i === 0 ? '#1a73e8' : i === 1 ? '#34a853' : i === 2 ? '#fbbc04' : '#9aa0a6';
+            return `<tr style="border-bottom:1px solid #f0f0f0;">
+                <td style="padding:8px 10px;font-size:13px;white-space:nowrap;" title="${m}">${shortName(m)}</td>
+                <td style="padding:8px 10px;width:55%;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <div style="flex:1;background:#f0f0f0;border-radius:4px;height:10px;">
+                            <div style="width:${pct}%;background:${barColor};height:10px;border-radius:4px;transition:width .3s;"></div>
+                        </div>
+                        <span style="font-size:13px;font-weight:600;min-width:32px;text-align:right;color:#333;">${c}</span>
+                    </div>
+                </td>
+            </tr>`;
+        }).join('');
+
+        // 每日表格 — 堆叠进度条显示模型占比
+        const maxDaily = Math.max(...days.map(d => data.daily[d]?.total || 0), 1);
+        const palette = ['#1a73e8','#34a853','#fbbc04','#ea4335','#9c27b0','#00bcd4','#ff9800'];
+        const allModels = [...new Set(days.flatMap(d => Object.keys(data.daily[d]?.models || {})))];
+        const modelColorMap = {};
+        allModels.forEach((m, i) => { modelColorMap[m] = palette[i % palette.length]; });
+
+        const dailyRows = days.map(day => {
+            const v = data.daily[day];
+            const isToday = day === today;
+            const isPeak = v.total === maxDaily && maxDaily > 0;
+            const barWidth = Math.round(v.total / maxDaily * 100);
+
+            // 堆叠段
+            const sortedDayModels = Object.entries(v.models).sort((a,b) => b[1]-a[1]);
+            const segments = sortedDayModels.map(([m, c]) => {
+                const segW = Math.round(c / v.total * 100);
+                return `<div style="width:${segW}%;background:${modelColorMap[m]};height:10px;" title="${shortName(m)}: ${c}"></div>`;
+            }).join('');
+
+            const topModel = sortedDayModels[0];
+            const badge = isToday
+                ? `<span style="font-size:10px;background:#f59e0b;color:#fff;border-radius:3px;padding:1px 5px;margin-left:4px;">今日</span>`
+                : isPeak
+                ? `<span style="font-size:10px;background:#1a73e8;color:#fff;border-radius:3px;padding:1px 5px;margin-left:4px;">峰值</span>`
+                : '';
+
+            return `<tr style="border-bottom:1px solid #f0f0f0;${isToday?'background:#fffde7;':''}">
+                <td style="padding:7px 10px;font-size:13px;font-weight:${isToday?'600':'400'};white-space:nowrap;">${day}${badge}</td>
+                <td style="padding:7px 10px;text-align:center;font-size:14px;font-weight:600;">${v.total}</td>
+                <td style="padding:7px 10px;min-width:140px;">
+                    <div style="display:flex;border-radius:4px;overflow:hidden;height:10px;background:#f0f0f0;">
+                        <div style="width:${barWidth}%;display:flex;overflow:hidden;">${segments}</div>
+                    </div>
+                    ${topModel ? `<div style="font-size:11px;color:#888;margin-top:3px;">${shortName(topModel[0])}: ${topModel[1]}</div>` : ''}
+                </td>
+            </tr>`;
+        }).join('');
+
+        // 图例
+        const legend = allModels.slice(0, 6).map(m =>
+            `<span style="display:inline-flex;align-items:center;gap:4px;margin:2px 6px 2px 0;font-size:11px;color:#555;">
+                <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${modelColorMap[m]};flex-shrink:0;"></span>${shortName(m)}
+            </span>`
+        ).join('');
+        const extraLegend = allModels.length > 6
+            ? `<span style="font-size:11px;color:#999;">+${allModels.length-6} 更多</span>` : '';
+
+        container.innerHTML = `
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
+                ${[
+                    ['总请求数', data.grand_total, '#e8f0fe', '#1a73e8', `近7日 ${week7}`],
+                    ['今日请求', todayTotal,  '#e6f4ea', '#1e8e3e', `较昨日 <span style="color:${trendColor};font-weight:600;">${trend}${Math.abs(todayTotal-yesterdayTotal)}</span>`],
+                    ['昨日请求', yesterdayTotal, '#fce8e6', '#d93025', yesterday || '—'],
+                    ['模型数量', modelCount, '#fef7e0', '#f9ab00', '个不同模型'],
+                ].map(([label, val, bg, color, sub]) => `
+                    <div style="background:${bg};border-radius:10px;padding:14px 18px;">
+                        <div style="font-size:12px;color:#666;margin-bottom:4px;">${label}</div>
+                        <div style="font-size:26px;font-weight:700;color:${color};line-height:1.2;">${val}</div>
+                        <div style="font-size:11px;color:#888;margin-top:4px;">${sub}</div>
+                    </div>`).join('')}
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:20px;align-items:start;">
+                <div style="border:1px solid #f0f0f0;border-radius:8px;overflow:hidden;">
+                    <div style="padding:10px 14px;background:#fafafa;border-bottom:1px solid #f0f0f0;font-size:14px;font-weight:600;">各模型调用次数</div>
+                    <table style="width:100%;border-collapse:collapse;">
+                        <thead><tr style="background:#f5f5f5;font-size:11px;color:#888;text-transform:uppercase;">
+                            <th style="text-align:left;padding:6px 10px;font-weight:500;">模型</th>
+                            <th style="text-align:left;padding:6px 10px;font-weight:500;">调用次数</th>
+                        </tr></thead>
+                        <tbody>${modelRows || '<tr><td colspan="2" style="color:#999;padding:16px;text-align:center;">暂无数据</td></tr>'}</tbody>
+                    </table>
+                </div>
+                <div style="border:1px solid #f0f0f0;border-radius:8px;overflow:hidden;">
+                    <div style="padding:10px 14px;background:#fafafa;border-bottom:1px solid #f0f0f0;">
+                        <div style="font-size:14px;font-weight:600;margin-bottom:6px;">每日统计（最近30天）</div>
+                        <div style="display:flex;flex-wrap:wrap;">${legend}${extraLegend}</div>
+                    </div>
+                    <table style="width:100%;border-collapse:collapse;">
+                        <thead><tr style="background:#f5f5f5;font-size:11px;color:#888;text-transform:uppercase;">
+                            <th style="text-align:left;padding:6px 10px;font-weight:500;">日期</th>
+                            <th style="text-align:center;padding:6px 10px;font-weight:500;">总次数</th>
+                            <th style="text-align:left;padding:6px 10px;font-weight:500;">模型分布</th>
+                        </tr></thead>
+                        <tbody>${dailyRows || '<tr><td colspan="3" style="color:#999;padding:16px;text-align:center;">暂无数据</td></tr>'}</tbody>
+                    </table>
+                </div>
+            </div>`;
+    } catch (e) {
+        container.innerHTML = `<p style="color:red;">加载失败: ${e.message}</p>`;
+    }
 }

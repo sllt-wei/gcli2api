@@ -49,6 +49,8 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["retry_429_interval"] = await config.get_retry_429_interval()
         # 抗截断配置
         current_config["anti_truncation_max_attempts"] = await config.get_anti_truncation_max_attempts()
+        current_config["resource_exhausted_cooldown_hours"] = await config.get_resource_exhausted_cooldown_hours()
+        current_config["no_credential_error_msg"] = config.get_no_credential_error_msg()
 
         # 兼容性配置
         current_config["compatibility_mode_enabled"] = await config.get_compatibility_mode_enabled()
@@ -130,6 +132,19 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 raise HTTPException(
                     status_code=400, detail="抗截断最大重试次数必须是1-10之间的整数"
                 )
+
+        if "resource_exhausted_cooldown_hours" in new_config:
+            try:
+                hours = float(new_config["resource_exhausted_cooldown_hours"])
+                if hours <= 0 or hours > 720:
+                    raise HTTPException(status_code=400, detail="冷却时间必须在 0-720 小时之间")
+                new_config["resource_exhausted_cooldown_hours"] = hours
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="冷却时间必须是有效的数字")
+
+        if "no_credential_error_msg" in new_config:
+            if not isinstance(new_config["no_credential_error_msg"], str) or not new_config["no_credential_error_msg"].strip():
+                raise HTTPException(status_code=400, detail="无可用凭证报错信息不能为空")
 
         if "compatibility_mode_enabled" in new_config:
             if not isinstance(new_config["compatibility_mode_enabled"], bool):
