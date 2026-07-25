@@ -3232,7 +3232,7 @@ function autoSetKeepaliveUrl() {
     document.getElementById('keepaliveUrl').value = url;
 }
 
-async function loadModelStats() {
+async function loadModelStatsLegacy() {
     const container = document.getElementById('modelStatsContent');
     container.innerHTML = '<p style="color:#999;">加载中...</p>';
     try {
@@ -3367,5 +3367,215 @@ async function loadModelStats() {
             </div>`;
     } catch (e) {
         container.innerHTML = `<p style="color:red;">加载失败: ${e.message}</p>`;
+    }
+}
+
+async function loadModelStats() {
+    const container = document.getElementById('modelStatsContent');
+    container.innerHTML = '<p style="color:#999;">Loading...</p>';
+    try {
+        const res = await fetch('./stats', { headers: getAuthHeaders() });
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+
+        const emptyStats = { total: {}, grand_total: 0, daily: {} };
+        const modes = data.modes || {};
+        const getModeStats = key => modes[key] || emptyStats;
+        const getModeTotal = key => Number(getModeStats(key).grand_total || 0);
+        const modeLabels = {
+            all: 'All',
+            geminicli: 'CLI',
+            antigravity: 'Anti',
+            legacy: 'Legacy',
+            other: 'Other',
+        };
+        const modeKeys = ['all', 'geminicli', 'antigravity'];
+        if (getModeTotal('legacy') > 0) modeKeys.push('legacy');
+        if (getModeTotal('other') > 0) modeKeys.push('other');
+
+        const requestedMode = window.__modelStatsMode || 'all';
+        const selectedMode = modeKeys.includes(requestedMode) ? requestedMode : 'all';
+        window.__modelStatsMode = selectedMode;
+
+        const sumValues = obj => Object.values(obj || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+        const selectedStats = selectedMode === 'all'
+            ? {
+                total: data.total || {},
+                grand_total: Number(data.grand_total || sumValues(data.total)),
+                daily: data.daily || {},
+            }
+            : getModeStats(selectedMode);
+
+        const totalByModel = selectedStats.total || {};
+        const dailyByDay = selectedStats.daily || {};
+        const grandTotal = Number(selectedStats.grand_total || sumValues(totalByModel));
+        const today = new Date().toISOString().slice(0, 10);
+        const days = Object.keys(dailyByDay).sort().reverse();
+        const todayTotal = Number((dailyByDay[today] || { total: 0 }).total || 0);
+        const yesterday = days.find(d => d < today);
+        const yesterdayTotal = Number((dailyByDay[yesterday] || { total: 0 }).total || 0);
+        const modelCount = Object.keys(totalByModel).length;
+        const week7 = days.slice(0, 7).reduce((sum, day) => sum + Number(dailyByDay[day]?.total || 0), 0);
+        const trendDiff = todayTotal - yesterdayTotal;
+        const trendColor = trendDiff > 0 ? '#1e8e3e' : trendDiff < 0 ? '#d93025' : '#888';
+        const trendText = trendDiff > 0 ? `+${trendDiff}` : `${trendDiff}`;
+
+        const escapeHtml = value => String(value).replace(/[&<>"']/g, ch => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+        }[ch]));
+        const shortName = name => {
+            const parts = String(name).split('-');
+            const meaningful = parts.filter(p => p !== 'gemini' && p !== 'models');
+            return meaningful.slice(0, 4).join('-') || String(name);
+        };
+
+        const selector = `
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                ${modeKeys.map(key => {
+                    const isActive = key === selectedMode;
+                    const count = key === 'all' ? Number(data.grand_total || 0) : getModeTotal(key);
+                    return `<button type="button" onclick="window.__modelStatsMode='${key}'; loadModelStats()"
+                        style="border:1px solid ${isActive ? '#1a73e8' : '#d0d7de'};background:${isActive ? '#e8f0fe' : '#fff'};color:${isActive ? '#174ea6' : '#444'};border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;">
+                        ${modeLabels[key] || escapeHtml(key)}
+                        <span style="margin-left:5px;font-weight:700;">${count}</span>
+                    </button>`;
+                }).join('')}
+            </div>`;
+
+        const sortedModels = Object.entries(totalByModel).sort((a, b) => Number(b[1]) - Number(a[1]));
+        const maxCount = Number(sortedModels[0]?.[1] || 1);
+        const splitModes = ['geminicli', 'antigravity'];
+        if (getModeTotal('legacy') > 0) splitModes.push('legacy');
+        if (getModeTotal('other') > 0) splitModes.push('other');
+        const showModeColumns = selectedMode === 'all';
+        const getModeModelCount = (mode, model) => Number(getModeStats(mode).total?.[model] || 0);
+        const countCell = count => `<td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:600;color:#333;">${count}</td>`;
+
+        const modelRows = sortedModels.map(([modelName, count], index) => {
+            const safeName = escapeHtml(modelName);
+            const pct = Math.round(Number(count) / maxCount * 100);
+            const barColor = index === 0 ? '#1a73e8' : index === 1 ? '#34a853' : index === 2 ? '#fbbc04' : '#9aa0a6';
+            const splitCells = showModeColumns
+                ? splitModes.map(mode => countCell(getModeModelCount(mode, modelName))).join('')
+                : countCell(count);
+            return `<tr style="border-bottom:1px solid #f0f0f0;">
+                <td style="padding:8px 10px;font-size:13px;white-space:nowrap;" title="${safeName}">${escapeHtml(shortName(modelName))}</td>
+                <td style="padding:8px 10px;width:${showModeColumns ? '40%' : '55%'};">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <div style="flex:1;background:#f0f0f0;border-radius:4px;height:10px;">
+                            <div style="width:${pct}%;background:${barColor};height:10px;border-radius:4px;transition:width .3s;"></div>
+                        </div>
+                        <span style="font-size:13px;font-weight:600;min-width:32px;text-align:right;color:#333;">${count}</span>
+                    </div>
+                </td>
+                ${splitCells}
+            </tr>`;
+        }).join('');
+
+        const maxDaily = Math.max(...days.map(day => Number(dailyByDay[day]?.total || 0)), 1);
+        const palette = ['#1a73e8', '#34a853', '#fbbc04', '#ea4335', '#9c27b0', '#00bcd4', '#ff9800'];
+        const allModels = [...new Set(days.flatMap(day => Object.keys(dailyByDay[day]?.models || {})))];
+        const modelColorMap = {};
+        allModels.forEach((modelName, index) => { modelColorMap[modelName] = palette[index % palette.length]; });
+        const getModeDayTotal = (mode, day) => Number(getModeStats(mode).daily?.[day]?.total || 0);
+
+        const dailyRows = days.map(day => {
+            const value = dailyByDay[day] || { models: {}, total: 0 };
+            const total = Number(value.total || 0);
+            const isToday = day === today;
+            const isPeak = total === maxDaily && maxDaily > 0;
+            const barWidth = Math.round(total / maxDaily * 100);
+            const sortedDayModels = Object.entries(value.models || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+            const segments = sortedDayModels.map(([modelName, count]) => {
+                const segW = total ? Math.max(1, Math.round(Number(count) / total * 100)) : 0;
+                return `<div style="width:${segW}%;background:${modelColorMap[modelName]};height:10px;" title="${escapeHtml(shortName(modelName))}: ${count}"></div>`;
+            }).join('');
+            const topModel = sortedDayModels[0];
+            const badge = isToday
+                ? `<span style="font-size:10px;background:#f59e0b;color:#fff;border-radius:3px;padding:1px 5px;margin-left:4px;">Today</span>`
+                : isPeak
+                ? `<span style="font-size:10px;background:#1a73e8;color:#fff;border-radius:3px;padding:1px 5px;margin-left:4px;">Peak</span>`
+                : '';
+            const modeBreakdown = showModeColumns
+                ? `<div style="font-size:11px;color:#888;margin-top:3px;">CLI ${getModeDayTotal('geminicli', day)} / Anti ${getModeDayTotal('antigravity', day)}</div>`
+                : '';
+
+            return `<tr style="border-bottom:1px solid #f0f0f0;${isToday ? 'background:#fffde7;' : ''}">
+                <td style="padding:7px 10px;font-size:13px;font-weight:${isToday ? '600' : '400'};white-space:nowrap;">${day}${badge}</td>
+                <td style="padding:7px 10px;text-align:center;font-size:14px;font-weight:600;">${total}</td>
+                <td style="padding:7px 10px;min-width:140px;">
+                    <div style="display:flex;border-radius:4px;overflow:hidden;height:10px;background:#f0f0f0;">
+                        <div style="width:${barWidth}%;display:flex;overflow:hidden;">${segments}</div>
+                    </div>
+                    ${topModel ? `<div style="font-size:11px;color:#888;margin-top:3px;">${escapeHtml(shortName(topModel[0]))}: ${topModel[1]}</div>` : ''}
+                    ${modeBreakdown}
+                </td>
+            </tr>`;
+        }).join('');
+
+        const legend = allModels.slice(0, 6).map(modelName =>
+            `<span style="display:inline-flex;align-items:center;gap:4px;margin:2px 6px 2px 0;font-size:11px;color:#555;">
+                <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${modelColorMap[modelName]};flex-shrink:0;"></span>${escapeHtml(shortName(modelName))}
+            </span>`
+        ).join('');
+        const extraLegend = allModels.length > 6
+            ? `<span style="font-size:11px;color:#999;">+${allModels.length - 6} more</span>`
+            : '';
+        const noModelData = '<tr><td colspan="6" style="color:#999;padding:16px;text-align:center;">No data</td></tr>';
+        const noDailyData = '<tr><td colspan="3" style="color:#999;padding:16px;text-align:center;">No data</td></tr>';
+
+        container.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
+                ${selector}
+                <button type="button" onclick="loadModelStats()" style="border:1px solid #d0d7de;background:#fff;color:#444;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;">Refresh</button>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:14px;">
+                ${[
+                    ['Total Requests', grandTotal, '#e8f0fe', '#1a73e8', `Last 7 days ${week7}`],
+                    ['Today', todayTotal, '#e6f4ea', '#1e8e3e', `vs yesterday <span style="color:${trendColor};font-weight:600;">${trendText}</span>`],
+                    ['Yesterday', yesterdayTotal, '#fce8e6', '#d93025', yesterday || '-'],
+                    ['Models', modelCount, '#fef7e0', '#f9ab00', modeLabels[selectedMode] || selectedMode],
+                ].map(([label, value, bg, color, sub]) => `
+                    <div style="background:${bg};border-radius:8px;padding:14px 18px;">
+                        <div style="font-size:12px;color:#666;margin-bottom:4px;">${label}</div>
+                        <div style="font-size:26px;font-weight:700;color:${color};line-height:1.2;">${value}</div>
+                        <div style="font-size:11px;color:#888;margin-top:4px;">${sub}</div>
+                    </div>`).join('')}
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:20px;align-items:start;">
+                <div style="border:1px solid #f0f0f0;border-radius:8px;overflow:hidden;">
+                    <div style="padding:10px 14px;background:#fafafa;border-bottom:1px solid #f0f0f0;font-size:14px;font-weight:600;">Model Calls</div>
+                    <table style="width:100%;border-collapse:collapse;">
+                        <thead><tr style="background:#f5f5f5;font-size:11px;color:#888;text-transform:uppercase;">
+                            <th style="text-align:left;padding:6px 10px;font-weight:500;">Model</th>
+                            <th style="text-align:left;padding:6px 10px;font-weight:500;">Share</th>
+                            ${showModeColumns
+                                ? `<th style="text-align:right;padding:6px 10px;font-weight:500;">Total</th>${splitModes.map(mode => `<th style="text-align:right;padding:6px 10px;font-weight:500;">${modeLabels[mode] || escapeHtml(mode)}</th>`).join('')}`
+                                : '<th style="text-align:right;padding:6px 10px;font-weight:500;">Calls</th>'}
+                        </tr></thead>
+                        <tbody>${modelRows || noModelData}</tbody>
+                    </table>
+                </div>
+                <div style="border:1px solid #f0f0f0;border-radius:8px;overflow:hidden;">
+                    <div style="padding:10px 14px;background:#fafafa;border-bottom:1px solid #f0f0f0;">
+                        <div style="font-size:14px;font-weight:600;margin-bottom:6px;">Daily Stats (last 30 days)</div>
+                        <div style="display:flex;flex-wrap:wrap;">${legend}${extraLegend}</div>
+                    </div>
+                    <table style="width:100%;border-collapse:collapse;">
+                        <thead><tr style="background:#f5f5f5;font-size:11px;color:#888;text-transform:uppercase;">
+                            <th style="text-align:left;padding:6px 10px;font-weight:500;">Date</th>
+                            <th style="text-align:center;padding:6px 10px;font-weight:500;">Total</th>
+                            <th style="text-align:left;padding:6px 10px;font-weight:500;">Model Distribution</th>
+                        </tr></thead>
+                        <tbody>${dailyRows || noDailyData}</tbody>
+                    </table>
+                </div>
+            </div>`;
+    } catch (e) {
+        container.innerHTML = `<p style="color:red;">Load failed: ${e.message}</p>`;
     }
 }

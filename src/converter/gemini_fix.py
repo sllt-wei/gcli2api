@@ -642,6 +642,10 @@ def is_search_model(model_name: str) -> bool:
 
 # ==================== 统一的 Gemini 请求后处理 ====================
 
+# 上游 Gemini 拒绝以 model 轮结尾；纯文本预填场景自动补一条 user 续写提示
+_MODEL_END_CONTINUE_PROMPT = "请继续。"
+
+
 def is_thinking_model(model_name: str) -> bool:
     """检查是否为思考模型 (包含 -thinking 或 pro)"""
     return "think" in model_name or "pro" in model_name.lower()
@@ -707,6 +711,48 @@ def map_antigravity_gemini_model(model_name: str, thinking_level: Optional[str],
     return base_model
 
 
+def _content_has_function_call(content: Dict[str, Any]) -> bool:
+    """判断 content 是否包含 functionCall（工具调用轮不能用假 user 糊弄）。"""
+    parts = content.get("parts") or []
+    if not isinstance(parts, list):
+        return False
+    for part in parts:
+        if isinstance(part, dict) and ("functionCall" in part or "function_call" in part):
+            return True
+    return False
+
+
+def ensure_contents_end_with_user(contents: Any) -> Any:
+    """
+    兼容上游限制：Requests ending with a model turn are not supported.
+
+    - 末尾是纯文本 model：保留历史并追加一条 user 续写提示（模拟预填/多轮续写）
+    - 末尾 model 含 functionCall：不自动修补（缺少 tool result 时无法合法续写）
+    - 已以 user 结尾：原样返回
+    """
+    if not isinstance(contents, list) or not contents:
+        return contents
+
+    last = contents[-1]
+    if not isinstance(last, dict) or last.get("role") != "model":
+        return contents
+
+    if _content_has_function_call(last):
+        log.warning(
+            "[GEMINI_FIX] 请求以含 functionCall 的 model 结尾，无法自动兼容；"
+            "请在下一条 user 中返回 functionResponse/tool 结果"
+        )
+        return contents
+
+    # 连续多条末尾 model（异常历史）一并保留，只在最后补一条 user
+    fixed = list(contents)
+    fixed.append({"role": "user", "parts": [{"text": _MODEL_END_CONTINUE_PROMPT}]})
+    log.warning(
+        "[GEMINI_FIX] 请求以 model 结尾（上游不支持），已自动追加 user 续写提示以兼容"
+    )
+    return fixed
+
+
 async def normalize_gemini_request(
     request: Dict[str, Any],
     mode: str = "geminicli"
@@ -718,6 +764,7 @@ async def normalize_gemini_request(
     1. 模型特性处理 (thinking config, search tools)
     3. 参数范围限制 (maxOutputTokens, topK)
     4. 工具清理
+    5. 末尾 model 轮兼容（避免上游 400）
 
     Args:
         request: 原始请求字典
@@ -1032,7 +1079,8 @@ async def normalize_gemini_request(
             else:
                 cleaned_contents.append(content)
         
-        result["contents"] = cleaned_contents
+        # 上游 Gemini 不支持以 model 结尾；公共兼容（所有 mode / 路由生效）
+        result["contents"] = ensure_contents_end_with_user(cleaned_contents)
 
     if generation_config:
         result["generationConfig"] = generation_config

@@ -30,7 +30,7 @@ from src.api.utils import (
     get_retry_config,
     record_api_call_success,
     record_api_call_error,
-    parse_and_log_cooldown,
+    resolve_retry_cooldown,
 )
 from src.utils import get_geminicli_user_agent
 
@@ -242,20 +242,9 @@ async def stream_request(
                         log.warning(f"[GEMINICLI STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}")
 
                         # 解析冷却时间
-                        cooldown_until = None
-                        if (status_code == 429 or status_code == 503) and error_body:
-                            try:
-                                cooldown_until = await parse_and_log_cooldown(error_body, mode="geminicli")
-                            except Exception:
-                                pass
-
-                        # 预热下一个凭证
-                        if next_cred_task is None and attempt < max_retries:
-                            next_cred_task = asyncio.create_task(
-                                credential_manager.get_valid_credential(
-                                    mode="geminicli", model_name=model_name
-                                )
-                            )
+                        cooldown_until = await resolve_retry_cooldown(
+                            status_code, error_body or "", mode="geminicli"
+                        )
 
                         # 记录错误并切换凭证
                         await record_api_call_error(
@@ -272,6 +261,13 @@ async def stream_request(
                         )
 
                         if should_retry and attempt < max_retries:
+                            # 写入冷却/封禁状态后再取下一个凭证，避免重试继续选中当前号。
+                            if next_cred_task is None:
+                                next_cred_task = asyncio.create_task(
+                                    credential_manager.get_valid_credential(
+                                        mode="geminicli", model_name=model_name
+                                    )
+                                )
                             need_retry = True
                             break  # 跳出内层循环，准备重试
                         else:
@@ -555,20 +551,9 @@ async def non_stream_request(
                 log.warning(f"[NON-STREAM] 非流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_text[:500] if error_text else '无'}")
 
                 # 解析冷却时间
-                cooldown_until = None
-                if (status_code == 429 or status_code == 503) and error_text:
-                    try:
-                        cooldown_until = await parse_and_log_cooldown(error_text, mode="geminicli")
-                    except Exception:
-                        pass
-
-                # 并行预热下一个凭证,不阻塞当前处理
-                if next_cred_task is None and attempt < max_retries:
-                    next_cred_task = asyncio.create_task(
-                        credential_manager.get_valid_credential(
-                            mode="geminicli", model_name=model_name
-                        )
-                    )
+                cooldown_until = await resolve_retry_cooldown(
+                    status_code, error_text or "", mode="geminicli"
+                )
 
                 # 记录错误并切换凭证
                 await record_api_call_error(
@@ -587,6 +572,14 @@ async def non_stream_request(
                 if should_retry and attempt < max_retries:
                     # 重新获取凭证并重试
                     log.info(f"[NON-STREAM] 重试请求 (attempt {attempt + 2}/{max_retries + 1})...")
+
+                    # 写入冷却/封禁状态后再取下一个凭证，避免重试继续选中当前号。
+                    if next_cred_task is None:
+                        next_cred_task = asyncio.create_task(
+                            credential_manager.get_valid_credential(
+                                mode="geminicli", model_name=model_name
+                            )
+                        )
 
                     switched, next_cred_task = await _switch_credential_for_retry(
                         next_cred_task=next_cred_task,

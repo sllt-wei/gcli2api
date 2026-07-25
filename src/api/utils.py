@@ -5,6 +5,7 @@ Base API Client - 共用的 API 客户端基础功能
 
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -165,7 +166,7 @@ async def record_api_call_success(
         )
     if model_name:
         from src import stats as _stats
-        await _stats.increment(model_name)
+        await _stats.increment(model_name, mode=mode)
 
 
 async def record_api_call_error(
@@ -228,6 +229,40 @@ async def parse_and_log_cooldown(
             return cooldown_until
     except Exception as parse_err:
         log.debug(f"[{mode.upper()}] Failed to parse cooldown time: {parse_err}")
+    return None
+
+
+async def resolve_retry_cooldown(
+    status_code: int,
+    error_text: str,
+    mode: str = "geminicli",
+) -> Optional[float]:
+    """
+    Resolve the model cooldown for retryable upstream errors.
+
+    Google sometimes returns 429 without a quotaResetTimeStamp. In that case,
+    fall back to the configured RESOURCE_EXHAUSTED_COOLDOWN_HOURS so the same
+    credential is not selected repeatedly for the same model.
+    """
+    if status_code not in (429, 503):
+        return None
+
+    cooldown_until = None
+    if error_text:
+        cooldown_until = await parse_and_log_cooldown(error_text, mode=mode)
+        if cooldown_until is not None:
+            return cooldown_until
+
+    if status_code == 429:
+        hours = await get_resource_exhausted_cooldown_hours()
+        cooldown_until = time.time() + hours * 3600
+        log.info(
+            f"[{mode.upper()}] 429 without parseable quota reset, "
+            f"using fallback cooldown until "
+            f"{datetime.fromtimestamp(cooldown_until, timezone.utc).isoformat()}"
+        )
+        return cooldown_until
+
     return None
 
 
